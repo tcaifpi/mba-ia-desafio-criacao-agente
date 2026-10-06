@@ -48,7 +48,6 @@ def reservar_area(area: str, data: str, tool_context) -> str:
     
     taxa = AREAS_TAXAS[area]
     
-    # Se houver taxa e a confirmacao ainda nao tiver sido respondida
     if taxa > 0:
         conf = getattr(tool_context, "tool_confirmation", None)
         if not conf:
@@ -57,8 +56,8 @@ def reservar_area(area: str, data: str, tool_context) -> str:
                 payload={"action": "confirmar_reserva", "area": area, "data": data, "taxa": taxa}
             )
             return "Aguardando confirmacao do morador para conclusao da reserva com taxa."
-        
-        if not conf.confirmed:
+
+        if not getattr(conf, "confirmed", False):
             return "Reserva cancelada pelo morador."
 
     conn = get_connection()

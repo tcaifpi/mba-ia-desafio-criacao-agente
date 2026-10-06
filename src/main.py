@@ -79,24 +79,7 @@ async def enviar_mensagem(session_id: str, req: MensagemReq):
                     "detalhes": detalhes
                 })
 
-    if getattr(req, "confirmado", None) and pending_conf:
-        payload = pending_conf.payload if hasattr(pending_conf, "payload") and isinstance(pending_conf.payload, dict) else {}
-        area = payload.get("area")
-        data = payload.get("data")
-        apto = session.state.get("apartamento") if session.state else "302"
-        if area and data:
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT 1 FROM reservas WHERE area = ? AND data = ?", (area, data))
-            if not cur.fetchone():
-                import random
-                codigo = f"RSV-{random.randint(1000, 9999)}"
-                cur.execute(
-                    "INSERT INTO reservas (codigo, apartamento, area, data) VALUES (?, ?, ?, ?)",
-                    (codigo, apto, area, data)
-                )
-                conn.commit()
-            conn.close()
+
 
     return {
         "resposta": resposta_texto,
@@ -123,31 +106,18 @@ async def responder_confirmacao(session_id: str, req: ConfirmacaoReq):
     if not pending_conf:
         raise HTTPException(status_code=409, detail="Nao existe confirmacao pendente com esse id nesta sessao")
 
-    if req.confirmado and pending_conf:
-        payload = pending_conf.payload if hasattr(pending_conf, "payload") and isinstance(pending_conf.payload, dict) else {}
-        area = payload.get("area")
-        data = payload.get("data")
-        apto = session.state.get("apartamento") if session.state else "302"
-        if area and data:
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT 1 FROM reservas WHERE area = ? AND data = ?", (area, data))
-            if not cur.fetchone():
-                import random
-                codigo = f"RSV-{random.randint(1000, 9999)}"
-                cur.execute(
-                    "INSERT INTO reservas (codigo, apartamento, area, data) VALUES (?, ?, ?, ?)",
-                    (codigo, apto, area, data)
-                )
-                conn.commit()
-            conn.close()
-
-    tool_name = getattr(pending_conf, "tool_name", None) or "reservar_area"
+    from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+    conf_payload = pending_conf.payload if hasattr(pending_conf, "payload") and isinstance(pending_conf.payload, dict) else {}
+    conf_hint = getattr(pending_conf, "hint", "") or ""
     resume_part = types.Part(
         function_response=types.FunctionResponse(
             id=req.id,
-            name=tool_name,
-            response={"confirmed": req.confirmado}
+            name=REQUEST_CONFIRMATION_FUNCTION_CALL_NAME,
+            response={
+                "confirmed": req.confirmado,
+                "hint": conf_hint,
+                "payload": conf_payload
+            }
         )
     )
     resume_message = types.Content(role="user", parts=[resume_part])
@@ -177,6 +147,33 @@ async def responder_confirmacao(session_id: str, req: ConfirmacaoReq):
                     })
     except Exception:
         raise HTTPException(status_code=409, detail="Conflito ao processar confirmacao")
+
+    if req.confirmado:
+        payload = pending_conf.payload if hasattr(pending_conf, "payload") and isinstance(pending_conf.payload, dict) else {}
+        area = payload.get("area")
+        data = payload.get("data")
+        apto = session.state.get("apartamento") if session.state else "302"
+        if area and data:
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute("SELECT codigo FROM reservas WHERE area = ? AND data = ?", (area, data))
+            row = cur.fetchone()
+            if not row:
+                from src.tools.condominio_tools import gerar_codigo_reserva_unico
+                codigo = gerar_codigo_reserva_unico(cur)
+                cur.execute(
+                    "INSERT INTO reservas (codigo, apartamento, area, data) VALUES (?, ?, ?, ?)",
+                    (codigo, apto, area, data)
+                )
+                conn.commit()
+            else:
+                codigo = row[0]
+            conn.close()
+            if not resposta_texto or "pendente" in resposta_texto.lower() or "aguardando" in resposta_texto.lower():
+                resposta_texto = f"Reserva confirmada com sucesso para {area} no dia {data}. Codigo: {codigo}."
+    else:
+        if not resposta_texto:
+            resposta_texto = "Reserva cancelada pelo morador."
 
     return {
         "resposta": resposta_texto,
