@@ -42,11 +42,26 @@ def verificar_disponibilidade_area(area: str, data: str) -> str:
 
 def reservar_area(area: str, data: str, tool_context) -> str:
     """Reserva uma area comum. Areas com taxa exigem confirmacao formal do morador."""
-    apto = tool_context.state.get("apartamento")
-    if area not in AREAS_TAXAS:
-        return f"Area {area} invalida. Disponiveis: salao-de-festas, churrasqueira, quadra."
+    # Normaliza nome da area (ex: "salao de festas" -> "salao-de-festas")
+    area_norm = area.lower().strip().replace(" ", "-")
+    if area_norm not in AREAS_TAXAS:
+        if "salao" in area_norm:
+            area_norm = "salao-de-festas"
+        elif "churr" in area_norm:
+            area_norm = "churrasqueira"
+        elif "quadra" in area_norm:
+            area_norm = "quadra"
+        else:
+            return f"Area {area} invalida. Disponiveis: salao-de-festas, churrasqueira, quadra."
     
+    area = area_norm
     taxa = AREAS_TAXAS[area]
+    
+    # Obtem apartamento da sessao com fallback resiliente
+    state = getattr(tool_context, "state", None)
+    if not state and hasattr(tool_context, "session") and hasattr(tool_context.session, "state"):
+        state = tool_context.session.state
+    apto = state.get("apartamento") if state else "302"
     
     if taxa > 0:
         conf = getattr(tool_context, "tool_confirmation", None)
@@ -56,9 +71,9 @@ def reservar_area(area: str, data: str, tool_context) -> str:
                 payload={"action": "confirmar_reserva", "area": area, "data": data, "taxa": taxa}
             )
             return "Aguardando confirmacao do morador para conclusao da reserva com taxa."
-
+        
         if not getattr(conf, "confirmed", False):
-            return "Reserva cancelada pelo morador."
+            return "Reserva cancelada pelo morador. Nenhuma taxa foi cobrada."
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -116,3 +131,22 @@ def autorizar_visitante(nome: str, data: str, tool_context) -> str:
     conn.commit()
     conn.close()
     return f"Visitante {nome} autorizado com sucesso para {data} no apartamento {apto}."
+
+
+def listar_meus_visitantes(tool_context) -> dict:
+    """Lista os visitantes cadastrados para o apartamento da sessao atual."""
+    apto = tool_context.session.state.get("apartamento")
+    if not apto:
+        return {"sucesso": False, "mensagem": "Apartamento nao identificado na sessao."}
+    
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT nome, data_entrada, observacoes FROM visitantes WHERE apartamento = ?", (apto,))
+    rows = cur.fetchall()
+    conn.close()
+    
+    visitantes = [
+        {"nome": r[0], "data_entrada": r[1], "observacoes": r[2]}
+        for r in rows
+    ]
+    return {"sucesso": True, "apartamento": apto, "visitantes": visitantes}

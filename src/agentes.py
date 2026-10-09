@@ -4,7 +4,8 @@ from src.tools.condominio_tools import (
     verificar_disponibilidade_area,
     reservar_area,
     cancelar_reserva,
-    autorizar_visitante
+    autorizar_visitante,
+    listar_meus_visitantes
 )
 from src.tools.regulamento_tools import consultar_regulamento
 
@@ -21,7 +22,8 @@ Regras inegociaveis:
         verificar_disponibilidade_area,
         reservar_area,
         cancelar_reserva,
-        autorizar_visitante
+        autorizar_visitante,
+        listar_meus_visitantes
     ]
 )
 

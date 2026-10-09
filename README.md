@@ -38,8 +38,37 @@ O sistema emprega arquitetura multiagente coordenada pelo Google ADK:
 
 ---
 
+---
+
+---
+
 ## Como Rodar
 
-### 1. Configurar Variáveis de Ambiente
+### 1. Configurar Variáveis de Ambiente e Instalação
 ```bash
+# Instalar dependências com uv
+uv sync
+
+# Configurar as variáveis de ambiente
 cp .env.example .env
+# Defina sua chave no .env: GEMINI_API_KEY=sua_chave_aqui
+```
+
+### 2. Restauração e Inicialização do Banco de Dados
+Restaure as tabelas e a carga inicial do SQLite (condominio.db) a partir dos arquivos JSON:
+```bash
+uv run python -c "from src.database import init_db; init_db()"
+```
+
+### 3. Execução da API
+Inicie o servidor Uvicorn:
+```bash
+uv run uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+```
+A documentação interativa OpenAPI/Swagger estará em: http://localhost:8000/docs.
+
+### 4. Execução dos Testes Automatizados
+Para rodar a suíte completa de testes:
+```bash
+uv run pytest -v
+```

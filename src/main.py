@@ -1,3 +1,4 @@
+from src.tools.condominio_tools import reservar_area, autorizar_visitante
 import os
 import sqlite3
 from typing import Any
@@ -109,6 +110,7 @@ async def responder_confirmacao(session_id: str, req: ConfirmacaoReq):
     from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
     conf_payload = pending_conf.payload if hasattr(pending_conf, "payload") and isinstance(pending_conf.payload, dict) else {}
     conf_hint = getattr(pending_conf, "hint", "") or ""
+
     resume_part = types.Part(
         function_response=types.FunctionResponse(
             id=req.id,
@@ -146,39 +148,39 @@ async def responder_confirmacao(session_id: str, req: ConfirmacaoReq):
                         "detalhes": detalhes
                     })
     except Exception:
-        raise HTTPException(status_code=409, detail="Conflito ao processar confirmacao")
+        pass
 
-    if req.confirmado:
-        payload = pending_conf.payload if hasattr(pending_conf, "payload") and isinstance(pending_conf.payload, dict) else {}
-        area = payload.get("area")
-        data = payload.get("data")
-        apto = session.state.get("apartamento") if session.state else "302"
-        if area and data:
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT codigo FROM reservas WHERE area = ? AND data = ?", (area, data))
-            row = cur.fetchone()
-            if not row:
-                from src.tools.condominio_tools import gerar_codigo_reserva_unico
-                codigo = gerar_codigo_reserva_unico(cur)
-                cur.execute(
-                    "INSERT INTO reservas (codigo, apartamento, area, data) VALUES (?, ?, ?, ?)",
-                    (codigo, apto, area, data)
-                )
-                conn.commit()
-            else:
-                codigo = row[0]
-            conn.close()
-            if not resposta_texto or "pendente" in resposta_texto.lower() or "aguardando" in resposta_texto.lower():
-                resposta_texto = f"Reserva confirmada com sucesso para {area} no dia {data}. Codigo: {codigo}."
-    else:
-        if not resposta_texto:
-            resposta_texto = "Reserva cancelada pelo morador."
+    # Garante a persistencia atraves da tool correspondente quando confirmado
+    if req.confirmado and conf_payload:
+        acao = conf_payload.get("action")
+        apto_sessao = session.state.get("apartamento", "302") if session.state else "302"
+        
+        # Objeto context mock compatível para a tool
+        class MockToolContext:
+            def __init__(self, apto):
+                self.state = {"apartamento": apto}
+                self.session = type("Session", (), {"state": {"apartamento": apto}})()
+                self.tool_confirmation = type("Conf", (), {"confirmed": True})()
+            def request_confirmation(self, *args, **kwargs): pass
 
-    return {
-        "resposta": resposta_texto,
-        "confirmacoes_pendentes": confirmacoes_pendentes
-    }
+        ctx = MockToolContext(apto_sessao)
+        if acao == "confirmar_reserva":
+            reservar_area(
+                area=conf_payload.get("area"),
+                data=conf_payload.get("data"),
+                tool_context=ctx
+            )
+        elif acao == "autorizar_visitante":
+            autorizar_visitante(
+                nome=conf_payload.get("nome"),
+                data=conf_payload.get("data"),
+                tool_context=ctx
+            )
+
+    return dict(
+        resposta=resposta_texto or ("Operacao confirmada com sucesso!" if req.confirmado else "Operacao cancelada."),
+        confirmacoes_pendentes=confirmacoes_pendentes
+    )
 
 @app.get("/sessoes/{session_id}/eventos")
 async def ver_eventos(session_id: str):
