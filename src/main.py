@@ -97,6 +97,19 @@ async def responder_confirmacao(session_id: str, req: ConfirmacaoReq):
     if not session:
         raise HTTPException(status_code=404, detail="Sessao nao encontrada")
 
+    # 1. Regra de Idempotência: Se já foi respondido este id, devolve 409
+    from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
+    for event in session.events:
+        if event.content and event.content.parts:
+            for part in event.content.parts:
+                fn_resp = getattr(part, "function_response", None)
+                if fn_resp:
+                    r_id = getattr(fn_resp, "id", None)
+                    r_name = getattr(fn_resp, "name", None)
+                    if r_id == req.id and r_name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME:
+                        raise HTTPException(status_code=409, detail="Confirmacao ja respondida anteriormente")
+
+    # 2. Localiza a confirmacao pendente
     pending_conf = None
     for event in reversed(session.events):
         if event.actions and event.actions.requested_tool_confirmations:
@@ -107,7 +120,6 @@ async def responder_confirmacao(session_id: str, req: ConfirmacaoReq):
     if not pending_conf:
         raise HTTPException(status_code=409, detail="Nao existe confirmacao pendente com esse id nesta sessao")
 
-    from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
     conf_payload = pending_conf.payload if hasattr(pending_conf, "payload") and isinstance(pending_conf.payload, dict) else {}
     conf_hint = getattr(pending_conf, "hint", "") or ""
 
@@ -147,40 +159,31 @@ async def responder_confirmacao(session_id: str, req: ConfirmacaoReq):
                         "acao": acao,
                         "detalhes": detalhes
                     })
-    except Exception:
+    except Exception as e:
         pass
 
-    # Garante a persistencia atraves da tool correspondente quando confirmado
+    # 3. Retomada da tool quando confirmado: a própria tool executa a persistência
     if req.confirmado and conf_payload:
         acao = conf_payload.get("action")
-        apto_sessao = session.state.get("apartamento", "302") if session.state else "302"
+        apto = (session.state or {}).get("apartamento", "302")
+        from src.tools.condominio_tools import reservar_area, autorizar_visitante
         
-        # Objeto context mock compatível para a tool
-        class MockToolContext:
-            def __init__(self, apto):
-                self.state = {"apartamento": apto}
-                self.session = type("Session", (), {"state": {"apartamento": apto}})()
-                self.tool_confirmation = type("Conf", (), {"confirmed": True})()
+        class ToolResumeContext:
+            def __init__(self, apto_num):
+                self.state = {"apartamento": apto_num}
+                self.tool_confirmation = type("Confirmation", (), {"confirmed": True})()
             def request_confirmation(self, *args, **kwargs): pass
 
-        ctx = MockToolContext(apto_sessao)
+        ctx = ToolResumeContext(apto)
         if acao == "confirmar_reserva":
-            reservar_area(
-                area=conf_payload.get("area"),
-                data=conf_payload.get("data"),
-                tool_context=ctx
-            )
+            reservar_area(conf_payload.get("area"), conf_payload.get("data"), ctx)
         elif acao == "autorizar_visitante":
-            autorizar_visitante(
-                nome=conf_payload.get("nome"),
-                data=conf_payload.get("data"),
-                tool_context=ctx
-            )
+            autorizar_visitante(conf_payload.get("nome"), conf_payload.get("data"), ctx)
 
-    return dict(
-        resposta=resposta_texto or ("Operacao confirmada com sucesso!" if req.confirmado else "Operacao cancelada."),
-        confirmacoes_pendentes=confirmacoes_pendentes
-    )
+    return {
+        "resposta": resposta_texto or ("Operacao confirmada com sucesso!" if req.confirmado else "Operacao cancelada."),
+        "confirmacoes_pendentes": confirmacoes_pendentes
+    }
 
 @app.get("/sessoes/{session_id}/eventos")
 async def ver_eventos(session_id: str):
