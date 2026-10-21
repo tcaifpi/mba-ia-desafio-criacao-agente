@@ -97,7 +97,7 @@ async def responder_confirmacao(session_id: str, req: ConfirmacaoReq):
     if not session:
         raise HTTPException(status_code=404, detail="Sessao nao encontrada")
 
-    # 1. Regra de Idempotência: Se já foi respondido este id, devolve 409
+    # 1. 409 APENAS se adk_request_confirmation já foi respondida para esse id
     from google.adk.flows.llm_flows.functions import REQUEST_CONFIRMATION_FUNCTION_CALL_NAME
     for event in session.events:
         if event.content and event.content.parts:
@@ -109,7 +109,7 @@ async def responder_confirmacao(session_id: str, req: ConfirmacaoReq):
                     if r_id == req.id and r_name == REQUEST_CONFIRMATION_FUNCTION_CALL_NAME:
                         raise HTTPException(status_code=409, detail="Confirmacao ja respondida anteriormente")
 
-    # 2. Localiza a confirmacao pendente
+    # 2. Localiza a confirmação pendente
     pending_conf = None
     for event in reversed(session.events):
         if event.actions and event.actions.requested_tool_confirmations:
@@ -160,25 +160,43 @@ async def responder_confirmacao(session_id: str, req: ConfirmacaoReq):
                         "detalhes": detalhes
                     })
     except Exception as e:
-        pass
+        raise HTTPException(status_code=409, detail=f"Erro ao processar confirmacao: {str(e)}")
 
-    # 3. Retomada da tool quando confirmado: a própria tool executa a persistência
+    # 3. Persistência idempotente: grava apenas se confirmado e se ainda não constar no banco
     if req.confirmado and conf_payload:
+        from src.database import get_connection
+        from src.tools.condominio_tools import gerar_codigo_reserva_unico
         acao = conf_payload.get("action")
         apto = (session.state or {}).get("apartamento", "302")
-        from src.tools.condominio_tools import reservar_area, autorizar_visitante
-        
-        class ToolResumeContext:
-            def __init__(self, apto_num):
-                self.state = {"apartamento": apto_num}
-                self.tool_confirmation = type("Confirmation", (), {"confirmed": True})()
-            def request_confirmation(self, *args, **kwargs): pass
+        conn = get_connection()
+        cursor = conn.cursor()
 
-        ctx = ToolResumeContext(apto)
         if acao == "confirmar_reserva":
-            reservar_area(conf_payload.get("area"), conf_payload.get("data"), ctx)
+            area = conf_payload.get("area")
+            data = conf_payload.get("data")
+            cursor.execute("SELECT 1 FROM reservas WHERE area = ? AND data = ?", (area, data))
+            if not cursor.fetchone():
+                novo_cod = gerar_codigo_reserva_unico(cursor)
+                cursor.execute(
+                    "INSERT INTO reservas (codigo, apartamento, area, data) VALUES (?, ?, ?, ?)",
+                    (novo_cod, apto, area, data)
+                )
+                conn.commit()
+
         elif acao == "autorizar_visitante":
-            autorizar_visitante(conf_payload.get("nome"), conf_payload.get("data"), ctx)
+            nome = conf_payload.get("nome")
+            data = conf_payload.get("data")
+            cursor.execute(
+                "SELECT 1 FROM visitantes WHERE apartamento = ? AND nome = ? AND data = ?",
+                (apto, nome, data)
+            )
+            if not cursor.fetchone():
+                cursor.execute(
+                    "INSERT INTO visitantes (apartamento, nome, data) VALUES (?, ?, ?)",
+                    (apto, nome, data)
+                )
+                conn.commit()
+        conn.close()
 
     return {
         "resposta": resposta_texto or ("Operacao confirmada com sucesso!" if req.confirmado else "Operacao cancelada."),
